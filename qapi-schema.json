@@ -4885,6 +4885,7 @@
                                        'spiceport' : 'ChardevSpicePort',
                                        'vc'     : 'ChardevVC',
                                        'ringbuf': 'ChardevRingbuf',
+                                       'windbg': 'ChardevHostdev',
                                        # next one is just for compatibility
                                        'memory' : 'ChardevRingbuf' } }
 

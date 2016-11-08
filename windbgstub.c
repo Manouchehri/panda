@@ -1,10 +1,12 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
-//#include "qemu-common.h"
 #include "sysemu/char.h"
 #include "sysemu/sysemu.h"
+#include "qemu/error-report.h"
 #include "exec/windbgstub.h"
 #include "exec/windbgstub-utils.h"
+
+#define WINDBG "windbg"
 
 //windbg.exe -b -k com:pipe,baud=115200,port=\\.\pipe\windbg,resets=0
 //qemu.exe -windbg pipe:windbg
@@ -36,10 +38,19 @@ typedef struct Context {
 static Context input_context = { .state = STATE_LEADER };
 
 static CharDriverState *windbg_chr = NULL;
+static CharDriverState *serial_chr = NULL;
 
 static FILE *dump_file;
 
-static PCPU_CTRL_ADDRS cc_addrs;
+static bool is_debug = false;
+
+//TODO: Remove it
+static uint32_t cntrl_packet_id = RESET_PACKET_ID;
+static uint32_t data_packet_id = INITIAL_PACKET_ID | SYNC_PACKET_ID;
+static uint8_t lock = 0;
+//////////////////////////////////////////////////
+
+static PCPU_CTRL_ADDRS pc_addrs;
 
 static void windbg_dump(const char *fmt, ...)
 {
@@ -417,20 +428,23 @@ static int windbg_chr_can_receive(void *opaque)
 }
 
 static void windbg_set_breakpoint(int index)
-{    
+{
+    //CPUState *cpu = qemu_get_cpu(index);
+    //CPUArchState *env = CPU_ARCH_STATE(cpu);
+
     cntrl_packet_id = INITIAL_PACKET_ID;
     data_packet_id = INITIAL_PACKET_ID;
     windbg_send_data_packet((uint8_t *)get_ExceptionStateChange(0),
                             sizeof(EXCEPTION_STATE_CHANGE),
                             PACKET_TYPE_KD_STATE_CHANGE64);
     vm_stop(RUN_STATE_PAUSED);
-    bp = 1;
+    //TODO: breakpoint
+    //cpu_single_step(qemu_get_cpu(0), SSTEP_ENABLE);
+    //cpu_breakpoint_insert(cpu, env->eip, BP_CPU, NULL);
 }
 
 static void windbg_read_byte(Context *ctx, uint8_t byte)
 {
-    
-    
     switch (ctx->state) {
     case STATE_LEADER:
         if (byte == PACKET_LEADER_BYTE || byte == CONTROL_PACKET_LEADER_BYTE) {
@@ -524,16 +538,35 @@ static void windbg_read_byte(Context *ctx, uint8_t byte)
     }
 }
 
-static void windbg_in_chr_receive(void *opaque, const uint8_t *buf, int size)
+static void windbg_receive_from_windbg(void *opaque, const uint8_t *buf, int size)
 {
-    if (lock) {
-        int i;
-        for (i = 0; i < size; i++) {
-            uint8_t tmp = buf[i];
-            windbg_read_byte(&input_context, tmp);
-            //DUMP_VAR(tmp);
+    DUMP_ARRAY(buf, size);
+    if (!is_debug) {
+        if (lock) {
+            int i;
+            for (i = 0; i < size; i++) {
+                windbg_read_byte(&input_context, buf[i]);
+            }
         }
     }
+    else {
+        COUT_STRING("windbg");
+
+        uint8_t *tmp = g_malloc(size);
+        memcpy(tmp, buf, size);
+        qemu_chr_be_write(serial_chr, tmp, size);
+        g_free(tmp);
+    }
+}
+
+static int windbg_receive_from_kernel(struct CharDriverState *chr, const uint8_t *buf, int size)
+{
+    if (is_debug) {
+        COUT_STRING("kernel");
+        DUMP_ARRAY(buf, size);
+        qemu_chr_fe_write(windbg_chr, buf, size);
+    }
+    return size;
 }
 
 bool windbg_check_bp(void)
@@ -563,25 +596,63 @@ static void windbg_exit(void)
     windbg_close();
 }
 
+static void windbg_serial_parse(QemuOpts *opts, ChardevBackend *backend,
+                                  Error **errp)
+{
+    ChardevHostdev *serial;
+    serial = backend->u.serial.data = g_new0(ChardevHostdev, 1);
+    qemu_chr_parse_common(opts, qapi_ChardevHostdev_base(serial));
+    serial->device = g_strdup(WINDBG);
+}
+
+static CharDriverState *windbg_serial_open(const char *id, ChardevBackend *backend, ChardevReturn *ret, Error **errp)
+{
+    if (serial_chr) {
+        error_report("WinDbg: Multiple instances are not supported yet");
+        return NULL;
+    }
+
+    ChardevHostdev *opts = backend->u.windbg.data;
+    ChardevCommon *common = qapi_ChardevHostdev_base(opts);
+
+    serial_chr = qemu_chr_alloc(common, errp);
+    if (!serial_chr) {
+        error_report("WinDbg: problem with allocation serial chr");
+        return NULL;
+    }
+
+    serial_chr->chr_write = windbg_receive_from_kernel;
+    return serial_chr;
+}
+
 int windbgserver_start(const char *device)
 {
     if (windbg_chr) {
-        fprintf(stderr, "Multiple WinDbg instances are not supported yet\n");
+        error_report("WinDbg: Multiple instances are not supported yet");
         exit(1);
     }
 
+    const char *p;
+    is_debug = strstart(device, "debug,", &p);
+    if (is_debug) {
+        device = p;
+    }
+
+    register_char_driver(WINDBG, CHARDEV_BACKEND_KIND_WINDBG,
+                            windbg_serial_parse, windbg_serial_open);
+
     // open external pipe for listening to windbg
-    windbg_chr = qemu_chr_new("windbg", device, NULL);
+    windbg_chr = qemu_chr_new(WINDBG, device, NULL);
     if (!windbg_chr) {
         return -1;
     }
 
     qemu_chr_fe_claim_no_fail(windbg_chr);
     qemu_chr_add_handlers(windbg_chr, windbg_chr_can_receive,
-        windbg_in_chr_receive, NULL, NULL);
+                          windbg_receive_from_windbg, NULL, NULL);
 
     // open dump file
-    dump_file = fopen("windbg.dump", "wb");
+    dump_file = fopen(WINDBG ".dump", "wb");
 
     atexit(windbg_exit);
 

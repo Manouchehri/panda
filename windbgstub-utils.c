@@ -96,46 +96,14 @@ PEXCEPTION_STATE_CHANGE get_ExceptionStateChange(int index)
 
 size_t get_lssc_size(void)
 {
-    return lssc_size;
-}
+    memcpy(&lssc, get_ExceptionStateChange(0), sizeof(DBGKD_ANY_WAIT_STATE_CHANGE));
+    esc.StateChange.NewState = DbgKdLoadSymbolsStateChange;
+    //TODO: Get it
+    lssc.StateChange.u.Exception.ExceptionRecord.ExceptionCode = 0x22;
+    strcpy(lssc.NtKernelPathName, "\\SystemRoot\\system32\\ntoskrnl.exe");
+    //
 
-uint8_t *get_LoadSymbolsStateChange(int index)
-{
-    int i; 
-    uint8_t path_name[128]; //For Win7
-    size_t size = sizeof(DBGKD_ANY_WAIT_STATE_CHANGE), 
-           count = sizeof(path_name);
-    CPUState *cpu = qemu_get_cpu(index);
-    DBGKD_ANY_WAIT_STATE_CHANGE StateChange;
-    
-    memcpy(&StateChange, get_ExceptionStateChange(0), size);
-
-    cpu_memory_rw_debug(cpu, NT_KRNL_PNAME_ADDR, path_name, count, 0);
-    for (i = 0; i < count; i++) {
-        if((path_name[i / 2] = path_name[i]) == '\0') {
-            break;
-        }
-        i++;
-    }
-    count = i / 2 + 1;
-    lssc_size = size + count;
-    
-    StateChange.NewState = DbgKdLoadSymbolsStateChange;
-    StateChange.u.LoadSymbols.PathNameLength = count;
-    ////TODO: Get it
-    //StateChange.u.LoadSymbols.BaseOfDll = cca.KernelBase << 8 | ;
-    //StateChange.u.LoadSymbols.ProcessId = -1;
-    //StateChange.u.LoadSymbols.CheckSum = ;
-    //StateChange.u.LoadSymbols.SizeOfImage = ;
-    //StateChange.u.LoadSymbols.UnloadSymbols = false;
-    ////
-    
-    get_free();
-    lssc = g_malloc0(lssc_size);
-    memcpy(lssc, &StateChange, size);
-    memcpy(lssc + size, path_name, count);
-    
-    return lssc;
+    return &lssc;
 }
 
 PCPU_CONTEXT get_Context(int index)
@@ -146,7 +114,7 @@ PCPU_CONTEXT get_Context(int index)
 
     memset(&c, 0, sizeof(c));
 
-#if defined(TARGET_I386)
+  #if defined(TARGET_I386)
 
     c.ContextFlags = CPU_CONTEXT_ALL;
 
@@ -209,9 +177,9 @@ PCPU_CONTEXT get_Context(int index)
 
     c.ExtendedRegisters[0] = 0xaa;
 
-#elif defined(TARGET_X86_64)
+  #elif defined(TARGET_X86_64)
 
-#endif
+  #endif
 
     return &c;
 }
@@ -224,7 +192,7 @@ void set_Context(uint8_t *data, int len, int index)
 
     memcpy(PTR(c), data, ROUND(len, sizeof(c)));
 
-#if defined(TARGET_I386)
+  #if defined(TARGET_I386)
 
     if (c.ContextFlags & CPU_CONTEXT_FULL) {
         env->dr[0] = c.Dr0;
@@ -282,9 +250,9 @@ void set_Context(uint8_t *data, int len, int index)
         env->mxcsr = LONG(c.ExtendedRegisters, 6);
     }
 
-#elif defined(TARGET_X86_64)
+  #elif defined(TARGET_X86_64)
 
-#endif
+  #endif
 }
 
 PCPU_KSPECIAL_REGISTERS get_KSpecialRegisters(int index)
