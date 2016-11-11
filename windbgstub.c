@@ -35,6 +35,12 @@ typedef struct Context {
     uint8_t data[PACKET_MAX_SIZE];
 } Context;
 
+static bool is_debug = false;
+static uint32_t cntrl_packet_id = RESET_PACKET_ID;
+static uint32_t data_packet_id = INITIAL_PACKET_ID;
+static uint8_t lock = 0;
+static bool bp = 0;
+
 static Context input_context = { .state = STATE_LEADER };
 
 static CharDriverState *windbg_chr = NULL;
@@ -67,7 +73,7 @@ static void windbg_dump(const char *fmt, ...)
 static void windbg_send_data_packet(uint8_t *data, uint16_t byte_count,
                                     uint16_t type)
 {
-    static uint8_t trailing_byte = PACKET_TRAILING_BYTE;
+    uint8_t trailing_byte = PACKET_TRAILING_BYTE;
 
     KD_PACKET packet = {
         .PacketLeader = PACKET_LEADER,
@@ -114,8 +120,6 @@ static void windbg_process_manipulate_packet(Context *ctx)
            extra_data_size = 0,
            m64_size = sizeof(DBGKD_MANIPULATE_STATE64);
     uint32_t count, addr;
-    static uint8_t continue2_flag = 0;
-    static uint32_t continue2_tf = 0, continue2_dr7 = 0;
     bool send_only_m64 = false;
     DBGKD_MANIPULATE_STATE64 m64;
     CPUState *cpu = qemu_get_cpu(0);
@@ -154,19 +158,7 @@ static void windbg_process_manipulate_packet(Context *ctx)
         PCPU_CONTEXT cpuctx = get_Context(0);
         
         packet_size = sizeof(CPU_CONTEXT);
-        
-        if (continue2_flag) {
-            if (continue2_tf) {
-                /* Enable TF */
-                cpuctx->EFlags |= CPU_EFLAGS_TF;
-            }
-            else {
-                /* Remove it */
-                cpuctx->EFlags &= ~CPU_EFLAGS_TF;
-            }
-            continue2_flag--;
-        }
-        memcpy(M64_OFFSET(packet), cpuctx, packet_size);        
+        memcpy(M64_OFFSET(packet), cpuctx, packet_size);
         packet_size += m64_size;
 
         break;
@@ -200,14 +192,6 @@ static void windbg_process_manipulate_packet(Context *ctx)
         addr = m64.u.ReadMemory.TargetBaseAddress - sizeof(CPU_CONTEXT);
 
         m64.u.ReadMemory.ActualBytesRead = count;
-            
-        if (continue2_flag) {
-            //TODO: For all processors
-            /* Update DR7 and DR6 */
-            ksreg->KernelDr7 = continue2_dr7;
-            ksreg->KernelDr6 = 0;
-            continue2_flag--;
-        }   
         memcpy(M64_OFFSET(packet), ((uint8_t *) ksreg) + addr, count);
         packet_size = m64_size + count;
         
@@ -233,22 +217,22 @@ static void windbg_process_manipulate_packet(Context *ctx)
 
         break;
     case DbgKdContinueApi2:
-        continue2_tf = m64.u.Continue2.ControlSet.TraceFlag;
-        continue2_dr7 = m64.u.Continue2.ControlSet.Dr7;
-        continue2_flag = 2;
+    {
+        uint32_t tf = m64.u.Continue2.ControlSet.TraceFlag;
 
-        if(!continue2_tf) {
+        if (!tf) {
             bp = 0;
         }
         vm_start();
 
-        if(continue2_tf) {
+        if (tf) {
             windbg_send_data_packet((uint8_t *)get_ExceptionStateChange(0),
                 sizeof(EXCEPTION_STATE_CHANGE),
                 PACKET_TYPE_KD_STATE_CHANGE64);
         }
         
         return;
+    }
     case DbgKdReadPhysicalMemoryApi:
 
         break;
@@ -393,9 +377,7 @@ static void windbg_process_control_packet(Context *ctx)
         windbg_send_data_packet(data, get_lssc_size(), 
             PACKET_TYPE_KD_STATE_CHANGE64);
         windbg_send_control_packet(ctx->packet.PacketType);
-        if (data_packet_id & SYNC_PACKET_ID) {
-            data_packet_id = INITIAL_PACKET_ID;
-        }
+        cntrl_packet_id = INITIAL_PACKET_ID;
 
         break;
     }
@@ -434,10 +416,6 @@ static int windbg_chr_can_receive(void *opaque)
 
 static void windbg_set_breakpoint(int index)
 {
-    //CPUState *cpu = qemu_get_cpu(index);
-    //CPUArchState *env = CPU_ARCH_STATE(cpu);
-
-    cntrl_packet_id = INITIAL_PACKET_ID;
     windbg_send_data_packet((uint8_t *)get_ExceptionStateChange(0),
                             sizeof(EXCEPTION_STATE_CHANGE),
                             PACKET_TYPE_KD_STATE_CHANGE64);
