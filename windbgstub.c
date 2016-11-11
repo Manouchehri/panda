@@ -39,7 +39,7 @@ static bool is_debug = false;
 static uint32_t cntrl_packet_id = RESET_PACKET_ID;
 static uint32_t data_packet_id = INITIAL_PACKET_ID;
 static uint8_t lock = 0;
-static bool bp = 0;
+static bool bp = false;
 
 static Context input_context = { .state = STATE_LEADER };
 
@@ -120,6 +120,7 @@ static void windbg_process_manipulate_packet(Context *ctx)
            extra_data_size = 0,
            m64_size = sizeof(DBGKD_MANIPULATE_STATE64);
     uint32_t count, addr;
+    static uint64_t bp_addr = 0;
     bool send_only_m64 = false;
     DBGKD_MANIPULATE_STATE64 m64;
     CPUState *cpu = qemu_get_cpu(0);
@@ -171,11 +172,21 @@ static void windbg_process_manipulate_packet(Context *ctx)
         
         break;
     case DbgKdWriteBreakPointApi:
-
+        bp_addr = m64.u.WriteBreakPoint.BreakPointAddress & 0xffffffff;
+        
+        m64.u.WriteBreakPoint.BreakPointHandle = 0x1;
+        cpu_breakpoint_insert(cpu, bp_addr, BP_GDB, NULL);
+        
+        send_only_m64 = true;   
+    
         break;
     case DbgKdRestoreBreakPointApi:
         m64.ReturnStatus = 0xc0000001;
-
+        if (bp_addr) {
+            cpu_breakpoint_remove(cpu, bp_addr, BP_GDB);
+            bp_addr = 0;
+        }
+        
         send_only_m64 = true;
         
         break;
@@ -221,7 +232,7 @@ static void windbg_process_manipulate_packet(Context *ctx)
         uint32_t tf = m64.u.Continue2.ControlSet.TraceFlag;
 
         if (!tf) {
-            bp = 0;
+            bp = false;
         }
         vm_start();
 
@@ -414,15 +425,13 @@ static int windbg_chr_can_receive(void *opaque)
   return PACKET_MAX_SIZE;
 }
 
-static void windbg_set_breakpoint(int index)
+void windbg_set_bp(int index)
 {
     windbg_send_data_packet((uint8_t *)get_ExceptionStateChange(0),
                             sizeof(EXCEPTION_STATE_CHANGE),
                             PACKET_TYPE_KD_STATE_CHANGE64);
     vm_stop(RUN_STATE_PAUSED);
-    //TODO: breakpoint
-    //cpu_single_step(qemu_get_cpu(0), SSTEP_ENABLE);
-    //cpu_breakpoint_insert(cpu, env->eip, BP_CPU, NULL);
+    bp = true;
 }
 
 static void windbg_read_byte(Context *ctx, uint8_t byte)
@@ -441,7 +450,7 @@ static void windbg_read_byte(Context *ctx, uint8_t byte)
             }
         } else if (byte == BREAKIN_PACKET_BYTE) {
             //TODO: For all processors
-            windbg_set_breakpoint(0);
+            windbg_set_bp(0);
             ctx->index = 0;
         } else {
             // skip the byte, restart waiting for the leader
