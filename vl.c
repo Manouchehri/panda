@@ -3474,7 +3474,6 @@ int main(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_windbg:
                 add_device_config(DEV_WINDBG, optarg);
-                add_device_config(DEV_SERIAL, "windbg");
                 break;
             case QEMU_OPTION_L:
                 if (is_help_option(optarg)) {
