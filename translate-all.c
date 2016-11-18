@@ -70,6 +70,7 @@
 #include "qemu/bitmap.h"
 #include "qemu/timer.h"
 #include "exec/log.h"
+#include "exec/windbgstub.h"
 
 #ifdef CONFIG_LLVM
 #include "panda/tcg-llvm.h"
@@ -1356,7 +1357,12 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tb->tc_ptr = gen_code_buf;
     tb->cs_base = cs_base;
     tb->flags = flags;
-    tb->cflags = cflags;
+    if (windbg_check_single_step()) {
+        tb->cflags = 1;
+    }
+    else {
+        tb->cflags = cflags;
+    }
 
 #ifdef CONFIG_PROFILER
     tcg_ctx.tb_count1++; /* includes aborted translations because of
