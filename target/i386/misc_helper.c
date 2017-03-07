@@ -23,6 +23,7 @@
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/address-spaces.h"
+#include "exec/windbgstub.h"
 
 #ifdef CONFIG_SOFTMMU
 #include "panda/rr/rr_log.h"
@@ -549,6 +550,8 @@ void helper_rdmsr(CPUX86State *env)
     }
     env->regs[R_EAX] = (uint32_t)(val);
     env->regs[R_EDX] = (uint32_t)(val >> 32);
+
+    windbg_start_sync();
 }
 #endif
 
